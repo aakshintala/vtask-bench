@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <iomanip>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -16,6 +17,7 @@ using namespace std;
 
 inline cudaError_t cudaCheckError(cudaError_t retval, const char *txt,
                                   const char *file, int line) {
+#ifdef DEBUG
   std::cout << "[cuda] " << txt << std::endl;
 
   if (retval != cudaSuccess) {
@@ -23,6 +25,7 @@ inline cudaError_t cudaCheckError(cudaError_t retval, const char *txt,
               << std::endl;
     std::cout << "[cuda] " << file << " " << line << std::endl;
   }
+#endif
 
   return retval;
 }
@@ -40,8 +43,8 @@ __global__ void delay(volatile int *flag, uint64_t cyclesToSpin = 10000000) {
 }
 
 // This kernel just occupies the GPU for the specified number of cycles
-__global__ void incrementBufferAndSpin(uint64_t cyclesToSpin = 10000000,
-                                       int *buffer, uint64_t num_elems) {
+__global__ void incrementBufferAndSpin(int *buffer, uint64_t num_elems, 
+					uint64_t cyclesToSpin = 10000000) {
   uint64_t startClock = clock64();
 
   { // Increment each item in the buffer so as to establish a data dependence
@@ -72,7 +75,7 @@ auto getGpuClockRate() -> int {
 }
 
 void copyAndSpin(uint64_t numElems, size_t objectSize,
-                 uint64_t computeTimeCycles) {
+                 uint64_t computeTimeMicroseconds) {
   // We use the first GPU for our experiments
   cudaSetDevice(0);
 
@@ -81,7 +84,7 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
   // Allocate a pinned buffer on the host to copy from
   int *hostBuffer;
   CUDA_ASSERT(cudaMallocHost(&hostBuffer, bufferSize));
-  for (int i = 0; i < hostBuffer / sizeof(int); ++i)
+  for (int i = 0; i < bufferSize / sizeof(int); ++i)
     hostBuffer[i] = i;
 
   // Device side buffer to copy to.
@@ -102,8 +105,8 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
 
   // Start and Stop events allow us to time the time it took to do the work
   cudaEvent_t start, stop;
-  CUDA_ASSERT(cudaEventCreate(start));
-  CUDA_ASSERT(cudaEventCreate(stop));
+  CUDA_ASSERT(cudaEventCreate(&start));
+  CUDA_ASSERT(cudaEventCreate(&stop));
 
 #ifdef PROFILE
   pid_t pid = fork();
@@ -132,7 +135,7 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
     int blockSize = 128;
     int numBlocks = 1024;
     CUDA_ASSERT(cudaOccupancyMaxPotentialBlockSize(&numBlocks, &blockSize,
-                                                   spin_for_cycles));
+                                                   incrementBufferAndSpin));
 
     uint64_t computeTimeCycles =
         (computeTimeMicroseconds / 1e6) * getGpuClockRate() * 1e3;
@@ -147,7 +150,7 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
       // This kernel increments each element in the buffer and then spins until
       // the desired number of cycles have elapsed.
       incrementBufferAndSpin<<<numBlocks, blockSize, 0, stream>>>(
-          computeTimeCycles, deviceBuffer + offset, objectSize / sizeof(int));
+          (int *)deviceBuffer + offset, objectSize / sizeof(int), computeTimeCycles);
 
       CUDA_ASSERT(cudaMemcpyAsync((void *)(deviceBuffer + offset),
                                   (const void *)(hostBuffer + offset),
@@ -196,7 +199,7 @@ void panicIfNoGPU() {
 }
 
 int main(int argc, char **argv) {
-  uint64_t queueDepth = 1000000; // 1 million
+  uint64_t queueDepth = 500000; // 1 million
   size_t objectSize = 1024 * sizeof(int);
   int computeTimeMicroseconds = 10;
 
