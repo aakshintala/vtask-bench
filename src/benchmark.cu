@@ -47,7 +47,7 @@ __global__ void incrementBufferAndSpin(int *buffer, uint64_t num_elems,
 					uint64_t cyclesToSpin = 10000000) {
   uint64_t startClock = clock64();
 
-  { // Increment each item in the buffer so as to establish a data dependence
+/*  { // Increment each item in the buffer so as to establish a data dependence
     size_t globalId = blockIdx.x * blockDim.x + threadIdx.x;
     size_t gridSize = blockDim.x * gridDim.x;
 
@@ -56,7 +56,7 @@ __global__ void incrementBufferAndSpin(int *buffer, uint64_t num_elems,
       buffer[i] += 1;
     }
   }
-
+*/
   while (clock64() - startClock <= cyclesToSpin) {
     continue;
   }
@@ -139,6 +139,7 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
 
     uint64_t computeTimeCycles =
         (computeTimeMicroseconds / 1e6) * getGpuClockRate() * 1e3;
+    std::cout << "Compute Time Cycles per element = " <<computeTimeCycles <<std::endl;
 
     // Enqueue GPU Commands to the stream; won't be executed until we set flag.
     CUDA_ASSERT(cudaEventRecord(start, stream));
@@ -172,9 +173,9 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
     waitpid(pid, &status, 0);
 #endif // PROFILE
 
-    std::cout << "Transferred " << bufferSize / (double)1e9 << "GB of data in"
-              << time_ms / 1e3 << " s.\n Bandwidth =" << std::setprecision(2)
-              << bufferSize / (double)1e9 / (double)time_ms / 1e3 << std::endl;
+    std::cout << "Transferred " << bufferSize / (double)1e9 << " GB of data in " << time_ms << " ms." <<std::endl
+              <<"numberOfElements = " <<numElems << ". Chunk size = " << objectSize << " B, with compute time =" 
+	      << computeTimeMicroseconds << " us." <<std::endl;
 
     // Free buffers and destroy stream & events
     CUDA_ASSERT(cudaEventDestroy(stop));
