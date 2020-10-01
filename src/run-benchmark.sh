@@ -19,11 +19,11 @@ let elemSize=1024;
 while [[ $elemSize -lt 1073741824 ]]; do
 	let numElems=$totalDataMoved/$elemSize;
 	let computeTime=1; # Time in microseconds that simulates 'work' Range 10us to 10ms
-	while [[ $computeTime -lt 10000 ]]; do # stop at 10 milliseconds
+	while [[ $computeTime -lt 10000 ]]; do # stop at 1 milliseconds
 		subDir=$numElems-$elemSize-$computeTime
 		mkdir $subDir
 		cd $subDir
-		sudo timeout 6000 $topdir/p2pbenchmark -q $numElems -s $elemSize -t $computeTime | tee timing
+		sudo timeout 6000 $topdir/vtask-bench -q $numElems -s $elemSize -t $computeTime | tee timing
 		cd ..
 		let computeTime=$computeTime*10;
 	done
