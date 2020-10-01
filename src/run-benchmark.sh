@@ -17,10 +17,14 @@ let elemSize=1024;
 # Max elemSize = 1GiB
 while [[ $elemSize -lt 1073741824 ]]; do
 	let numElems=$totalDataMoved/$elemSize;
-	let computeTime=1; # Time in microseconds that simulates 'work' Range 10us to 10ms
-	while [[ $computeTime -lt 10000 ]]; do # stop at 1 milliseconds
-		sudo timeout 6000 $topdir/vtask-bench -m -q $numElems -s $elemSize -t $computeTime | tee -a outfile
-		let computeTime=$computeTime*10;
+	for i in `seq 0 1 2`; do
+		let inc=$((10**i));
+		let max=$((10**$inc));
+		let computeTime=$inc; # Time in us that simulates 'work'. Range: 10us to 1ms
+		while [[ $computeTime -lt $max ]]; do # stop at 1 milliseconds
+			sudo timeout 6000 $topdir/vtask-bench -m -q $numElems -s $elemSize -t $computeTime | tee -a outfile
+			let computeTime=$computeTime+$inc;
+		done
 	done
 	let elemSize=$elemSize*4;
 done
