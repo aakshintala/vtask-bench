@@ -20,7 +20,6 @@ inline cudaError_t cudaCheckError(cudaError_t retval, const char *txt,
                                   const char *file, int line) {
 #ifdef DEBUG
   std::cout << "[cuda] " << txt << std::endl;
-
   if (retval != cudaSuccess) {
     std::cout << "[cuda] error" << retval << " " << cudaGetErrorString(retval)
               << std::endl;
@@ -44,8 +43,8 @@ __global__ void delay(volatile int *flag, uint64_t cyclesToSpin = 10000000) {
 }
 
 // This kernel just occupies the GPU for the specified number of cycles
-__global__ void incrementBufferAndSpin(int *buffer, uint64_t num_elems,
-                                       uint64_t cyclesToSpin = 10000000) {
+__global__ void spinForNCycles(int *buffer, uint64_t num_elems,
+                               uint64_t cyclesToSpin = 10000000) {
   uint64_t startClock = clock64();
 
   while (clock64() - startClock <= cyclesToSpin) {
@@ -53,19 +52,23 @@ __global__ void incrementBufferAndSpin(int *buffer, uint64_t num_elems,
   }
 }
 
-auto getGpuClockRate() -> int {
+auto getGpuClockRate(bool minimal) -> int {
   cudaDeviceProp prop;
   CUDA_ASSERT(cudaGetDeviceProperties(&prop, 0));
-  std::cout << "Device properties:\n"
-            << "Name: " << prop.name << std::endl
-            << "pciBusID:" << std::hex << prop.pciBusID << std::endl
-            << "pciDeviceID:" << std::hex << prop.pciDeviceID << std::endl
-            << "pciDomainID:" << std::hex << prop.pciDomainID << std::endl
-            << std::dec << std::endl;
+
+  if (!minimal) {
+    std::cout << "Device properties:\n"
+              << "Name: " << prop.name << std::endl
+              << "pciBusID:" << std::hex << prop.pciBusID << std::endl
+              << "pciDeviceID:" << std::hex << prop.pciDeviceID << std::endl
+              << "pciDomainID:" << std::hex << prop.pciDomainID << std::endl
+              << std::dec << std::endl;
+  }
+
   return prop.clockRate;
 }
 
-void copyAndSpin(uint64_t numElems, size_t objectSize,
+void copyAndSpin(uint64_t numElems, size_t objectSize, bool minimal,
                  uint64_t computeTimeMicroseconds) {
   // We use the first GPU for our experiments
   cudaSetDevice(0);
@@ -126,12 +129,15 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
     int blockSize = 128;
     int numBlocks = 1024;
     CUDA_ASSERT(cudaOccupancyMaxPotentialBlockSize(&numBlocks, &blockSize,
-                                                   incrementBufferAndSpin));
+                                                   spinForNCycles));
 
     uint64_t computeTimeCycles =
-        (computeTimeMicroseconds / 1e6) * getGpuClockRate() * 1e3;
-    std::cout << "Compute Time Cycles per element = " << computeTimeCycles
-              << std::endl;
+        (computeTimeMicroseconds / 1e6) * getGpuClockRate(minimal) * 1e3;
+
+    if (!minimal) {
+      std::cout << "Compute Time Cycles per element = " << computeTimeCycles
+                << std::endl;
+    }
 
     // Enqueue GPU Commands to the stream; won't be executed until we set flag.
     CUDA_ASSERT(cudaEventRecord(start, stream));
@@ -142,7 +148,7 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
                                   objectSize, cudaMemcpyDeviceToHost, stream));
       // This kernel increments each element in the buffer and then spins until
       // the desired number of cycles have elapsed.
-      incrementBufferAndSpin<<<numBlocks, blockSize, 0, stream>>>(
+      spinForNCycles<<<numBlocks, blockSize, 0, stream>>>(
           (int *)deviceBuffer + offset, objectSize / sizeof(int),
           computeTimeCycles);
 
@@ -166,13 +172,17 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
     waitpid(pid, &status, 0);
 #endif // PROFILE
 
-    std::cout << "Transferred " << bufferSize / (double)1e9 << " GB of data in "
-              << time_ms << " ms." << std::endl
-              << "Number of chunks = " << numElems << "." << std::endl
-              << "Chunk size = " << objectSize << " B" << std::endl
-              << "Per chunk compute time =" << computeTimeMicroseconds << " us."
-              << std::endl;
-
+    if (minimal) {
+      std::cout << numElems << " " << objectSize << " "
+                << computeTimeMicroseconds << " " << time_ms << std::endl;
+    } else {
+      std::cout << "Transferred " << bufferSize / (double)1e9
+                << " GB of data in " << time_ms << " ms." << std::endl
+                << "Number of chunks = " << numElems << "." << std::endl
+                << "Chunk size = " << objectSize << " B" << std::endl
+                << "Per chunk compute time =" << computeTimeMicroseconds
+                << " us." << std::endl;
+    }
     // Free buffers and destroy stream & events
     CUDA_ASSERT(cudaEventDestroy(stop));
     CUDA_ASSERT(cudaEventDestroy(start));
@@ -186,10 +196,11 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
 #endif // PROFILE
 }
 
-void panicIfNoGPU() {
-  std::cout << "Making sure there is at least one GPU on this system. Will use "
-               "GPU 0 if there are multiple."
-            << std::endl;
+void panicIfNoGPU(tMinimal) {
+  if (!minimal) {
+    std::cout << "Making sure there is at least one GPU on this system. "
+              << "Will use GPU 0 if there are multiple." << std::endl;
+  }
   int numGPUs = 0;
   CUDA_ASSERT(cudaGetDeviceCount(&numGPUs));
   assert(numGPUs != 0);
@@ -199,12 +210,14 @@ int main(int argc, char **argv) {
   uint64_t queueDepth = 500000; // 1 million
   size_t objectSize = 1024 * sizeof(int);
   int computeTimeMicroseconds = 10;
+  bool minimalOutput = false;
 
   // process command line args
-  for (int i = 1; i < argc; i++) {
+  for (int i = 1; i < argc; ++i) {
     if (0 == strcmp(argv[i], "-h")) {
       std::cerr << "Usage:" << argv[0] << " [OPTION]..." << std::endl
                 << "Options:" << std::endl
+                << "\t-m\tMinimal output for processing."
                 << "\t-h\tDisplay this Help menu" << std::endl
                 << "\t-q\tNumber of Chunks ()" << std::endl
                 << "\t-s\tChunk size (in increments of sizeof(int))"
@@ -219,18 +232,22 @@ int main(int argc, char **argv) {
       objectSize = atoi(argv[i + 1]) * sizeof(int);
     } else if (0 == strcmp(argv[i], "-t")) {
       computeTimeMicroseconds = atoi(argv[i + 1]);
+    } else if (0 == strcmp(argv[i], "-m")) {
+      minimalOutput = true;
     }
   }
 
-  panicIfNoGPU();
+  panicIfNoGPU(minimalOutput);
 
-  std::cout << "Synthetic GPU data movement and compute benchmark.\n";
-  std::cout << "Moving " << queueDepth * objectSize / 1000 / 1000
-            << " MB of data." << std::endl;
-  std::cout << "Simulated compute time: " << computeTimeMicroseconds << " us."
-            << std::endl;
+  if (!minimalOutput) {
+    std::cout << "Synthetic GPU data movement and compute benchmark.\n";
+    std::cout << "Moving " << queueDepth * objectSize / 1000 / 1000
+              << " MB of data." << std::endl;
+    std::cout << "Simulated compute time: " << computeTimeMicroseconds << " us."
+              << std::endl;
+  }
 
-  copyAndSpin(queueDepth, objectSize, computeTimeMicroseconds);
+  copyAndSpin(queueDepth, objectSize, minimalOutput, computeTimeMicroseconds);
 
   exit(EXIT_SUCCESS);
 }
