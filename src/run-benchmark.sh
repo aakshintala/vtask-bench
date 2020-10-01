@@ -7,12 +7,19 @@ benchmarkDir=$topdir"/benchmark-$(date +%Y-%m-%d-%H-%M-%S)"
 mkdir $benchmarkDir
 cd $benchmarkDir
 
-let totalDataMoved=12*1024*1024*1024/4; # the benchmark uses ints, so divide by sizeof(int)
-let elemSize=1024; # Because each element is a 32-bit int, that's 40kb (1 page)
-while [[ $elemSize -lt 4294967296 ]]; do
+# the benchmark uses ints, so divide by sizeof(int)
+# Tune this according to max memory on your GPU.
+# GTX 970 I use has 4GiB so I set this to 2GiB
+let totalDataMoved=2*1024*1024*1024/4;
+
+# Because each element is a 32-bit int, that's 4kb (1 page)
+let elemSize=1024;
+
+# Max elemSize = 1GiB
+while [[ $elemSize -lt 1073741824 ]]; do
 	let numElems=$totalDataMoved/$elemSize;
-	let computeTime=10; # Time in microseconds that simulates 'work' Range 10u to 100m
-	while [[ $computeTime -lt 100000 ]]; do # stop at 100 milliseconds
+	let computeTime=1; # Time in microseconds that simulates 'work' Range 10us to 10ms
+	while [[ $computeTime -lt 10000 ]]; do # stop at 10 milliseconds
 		subDir=$numElems-$elemSize-$computeTime
 		mkdir $subDir
 		cd $subDir

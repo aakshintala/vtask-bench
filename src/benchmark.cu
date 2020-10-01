@@ -1,8 +1,9 @@
 #include <assert.h>
 #include <cmath>
 #include <cstdio>
-#include <iostream>
 #include <iomanip>
+#include <iostream>
+#include <iterator>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -43,20 +44,10 @@ __global__ void delay(volatile int *flag, uint64_t cyclesToSpin = 10000000) {
 }
 
 // This kernel just occupies the GPU for the specified number of cycles
-__global__ void incrementBufferAndSpin(int *buffer, uint64_t num_elems, 
-					uint64_t cyclesToSpin = 10000000) {
+__global__ void incrementBufferAndSpin(int *buffer, uint64_t num_elems,
+                                       uint64_t cyclesToSpin = 10000000) {
   uint64_t startClock = clock64();
 
-/*  { // Increment each item in the buffer so as to establish a data dependence
-    size_t globalId = blockIdx.x * blockDim.x + threadIdx.x;
-    size_t gridSize = blockDim.x * gridDim.x;
-
-#pragma unroll(5)
-    for (uint64_t i = globalId; i < num_elems; i += gridSize) {
-      buffer[i] += 1;
-    }
-  }
-*/
   while (clock64() - startClock <= cyclesToSpin) {
     continue;
   }
@@ -139,7 +130,8 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
 
     uint64_t computeTimeCycles =
         (computeTimeMicroseconds / 1e6) * getGpuClockRate() * 1e3;
-    std::cout << "Compute Time Cycles per element = " <<computeTimeCycles <<std::endl;
+    std::cout << "Compute Time Cycles per element = " << computeTimeCycles
+              << std::endl;
 
     // Enqueue GPU Commands to the stream; won't be executed until we set flag.
     CUDA_ASSERT(cudaEventRecord(start, stream));
@@ -151,7 +143,8 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
       // This kernel increments each element in the buffer and then spins until
       // the desired number of cycles have elapsed.
       incrementBufferAndSpin<<<numBlocks, blockSize, 0, stream>>>(
-          (int *)deviceBuffer + offset, objectSize / sizeof(int), computeTimeCycles);
+          (int *)deviceBuffer + offset, objectSize / sizeof(int),
+          computeTimeCycles);
 
       CUDA_ASSERT(cudaMemcpyAsync((void *)(deviceBuffer + offset),
                                   (const void *)(hostBuffer + offset),
@@ -173,9 +166,12 @@ void copyAndSpin(uint64_t numElems, size_t objectSize,
     waitpid(pid, &status, 0);
 #endif // PROFILE
 
-    std::cout << "Transferred " << bufferSize / (double)1e9 << " GB of data in " << time_ms << " ms." <<std::endl
-              <<"numberOfElements = " <<numElems << ". Chunk size = " << objectSize << " B, with compute time =" 
-	      << computeTimeMicroseconds << " us." <<std::endl;
+    std::cout << "Transferred " << bufferSize / (double)1e9 << " GB of data in "
+              << time_ms << " ms." << std::endl
+              << "Number of chunks = " << numElems << "." << std::endl
+              << "Chunk size = " << objectSize << " B" << std::endl
+              << "Per chunk compute time =" << computeTimeMicroseconds << " us."
+              << std::endl;
 
     // Free buffers and destroy stream & events
     CUDA_ASSERT(cudaEventDestroy(stop));
@@ -210,10 +206,10 @@ int main(int argc, char **argv) {
       std::cerr << "Usage:" << argv[0] << " [OPTION]..." << std::endl
                 << "Options:" << std::endl
                 << "\t-h\tDisplay this Help menu" << std::endl
-                << "\t-q\tQueue depth" << std::endl
-                << "\t-s\tobject size (in increments of sizeof(int))"
+                << "\t-q\tNumber of Chunks ()" << std::endl
+                << "\t-s\tChunk size (in increments of sizeof(int))"
                 << std::endl
-                << "\t-t\tCompute time to simulate" << std::endl
+                << "\t-t\tPer chunk compute time to simulate (us)" << std::endl
                 << std::endl
                 << std::endl;
       return EXIT_FAILURE;
