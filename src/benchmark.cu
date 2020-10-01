@@ -196,7 +196,7 @@ void copyAndSpin(uint64_t numElems, size_t objectSize, bool minimal,
 #endif // PROFILE
 }
 
-void panicIfNoGPU(tMinimal) {
+void panicIfNoGPU(bool minimal) {
   if (!minimal) {
     std::cout << "Making sure there is at least one GPU on this system. "
               << "Will use GPU 0 if there are multiple." << std::endl;

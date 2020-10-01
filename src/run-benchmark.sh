@@ -4,7 +4,7 @@ set -x #echo on
 # Make a new directory for each run.
 topdir=$(pwd)
 outfile=$topdir"/vtask-bench-out-$(date +%Y-%m-%d-%H-%M-%S)"
-touch outfile
+touch $outfile
 
 # the benchmark uses ints, so divide by sizeof(int)
 # Tune this according to max memory on your GPU.
@@ -22,7 +22,7 @@ while [[ $elemSize -lt 1073741824 ]]; do
 		let max=$((10**$inc));
 		let computeTime=$inc; # Time in us that simulates 'work'. Range: 10us to 1ms
 		while [[ $computeTime -lt $max ]]; do # stop at 1 milliseconds
-			sudo timeout 6000 $topdir/vtask-bench -m -q $numElems -s $elemSize -t $computeTime | tee -a outfile
+			sudo timeout 6000 $topdir/vtask-bench -m -q $numElems -s $elemSize -t $computeTime | tee -a $outfile
 			let computeTime=$computeTime+$inc;
 		done
 	done
