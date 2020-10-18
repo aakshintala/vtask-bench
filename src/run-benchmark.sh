@@ -1,5 +1,5 @@
 #! /bin/bash
-set -x #echo on
+#set -x #echo on
 
 # Make a new directory for each run.
 topdir=$(pwd)
@@ -17,12 +17,17 @@ let elemSize=1024;
 # Max elemSize = 1GiB
 while [[ $elemSize -lt 1073741824 ]]; do
 	let numElems=$totalDataMoved/$elemSize;
+	sudo timeout 6000 $topdir/vtask-bench -m -q $numElems -s $elemSize -t 1 | tee -a $outfile
+	let oldcompute=0;
 	for i in `seq 0 1 2`; do
-		let inc=$((10**i));
-		let max=$((10**$inc));
+		let inc=$((10**$i*2));
+		let max=$((10*10**$i+1));
 		let computeTime=$inc; # Time in us that simulates 'work'. Range: 10us to 1ms
 		while [[ $computeTime -lt $max ]]; do # stop at 1 milliseconds
+			if [[ $computeTime -ne $oldcompute ]]; then
 			sudo timeout 6000 $topdir/vtask-bench -m -q $numElems -s $elemSize -t $computeTime | tee -a $outfile
+			fi
+			let oldcompute=$computeTime;
 			let computeTime=$computeTime+$inc;
 		done
 	done

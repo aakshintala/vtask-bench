@@ -146,8 +146,7 @@ void copyAndSpin(uint64_t numElems, size_t objectSize, bool minimal,
       CUDA_ASSERT(cudaMemcpyAsync((void *)(hostBuffer + offset),
                                   (const void *)(deviceBuffer + offset),
                                   objectSize, cudaMemcpyDeviceToHost, stream));
-      // This kernel increments each element in the buffer and then spins until
-      // the desired number of cycles have elapsed.
+      // This kernel until spins desired the number of cycles have elapsed.
       spinForNCycles<<<numBlocks, blockSize, 0, stream>>>(
           (int *)deviceBuffer + offset, objectSize / sizeof(int),
           computeTimeCycles);
