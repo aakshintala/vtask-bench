@@ -81,12 +81,11 @@ static int processBuffer(QzSession_T *sess, unsigned char *src,
   unsigned int done = 0;
   unsigned int buf_processed = 0;
   unsigned int buf_remaining = *src_len;
-  unsigned int bytes_written = 0;
   unsigned int valid_dst_buf_len = dst_len;
 
   while (!done) {
     /* Do actual work */
-    if (is_compress) {
+    if (isCompress) {
       ret = qzCompress(sess, src, src_len, dst, &dst_len, 1);
     } else {
       ret = qzDecompress(sess, src, src_len, dst, &dst_len);
@@ -109,7 +108,6 @@ static int processBuffer(QzSession_T *sess, unsigned char *src,
     src += *src_len;
     *src_len = buf_remaining;
     dst_len = valid_dst_buf_len;
-    bytes_written = 0;
   }
 
   *src_len = buf_processed;
@@ -121,11 +119,14 @@ double measureDecompressionTime(int *buffer, uint64_t bufferSize,
   unsigned char *destBuffer = nullptr;
   unsigned int destBufferSize = bufferSize;
   CUDA_ASSERT(cudaMallocHost(&destBuffer, bufferSize));
+
   unsigned int srcLen = bufferSize;
+  unsigned char *srcBuf = buffer;
+
   // Compress buffer
-  if (int ret = processBuffer(&session, *buffer, &bufferSize, destBuffer,
-                              &destBufferSize, true);
-      ret != QZ_OK) {
+  int ret = processBuffer(&session, srcBuf, &srcLen, destBuffer, destBufferSize,
+                          true);
+  if (ret != QZ_OK) {
     std::cerr << "QATZip compression failed. ret = " << ret << std::endl;
     exit(EXIT_FAILURE);
   }
@@ -134,15 +135,21 @@ double measureDecompressionTime(int *buffer, uint64_t bufferSize,
   high_resolution_clock::time_point timer = high_resolution_clock::now();
 
   // Decompress buffer
-  if (int ret = processBuffer(&session, *destBuffer, &destBufferSize, buffer,
-                              &bufferSize, false);
-      ret != QZ_OK) {
+  ret = processBuffer(&session, destBuffer, &srcLen, srcBuf, srcLen, false);
+
+  // Stop Timer
+  double usElapsed =
+      duration_cast<microseconds>(high_resolution_clock::now() - timer).count();
+
+  // Check for errors
+  if (ret != QZ_OK) {
     std::cerr << "QATZip compression failed. ret = " << ret << std::endl;
     exit(EXIT_FAILURE);
   }
-  // Stop Timer
-  return duration_cast<microseconds>(high_resolution_clock::now() - time)
-      .count();
+  // Make sure we didn't corrupt data in this process.
+  assert(srcLen == bufferSize);
+
+  return usElapsed;
 }
 
 void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
@@ -357,8 +364,8 @@ int main(int argc, char **argv) {
               << std::endl;
   }
 
-  decompressCopyAndSpin(queueDepth, objectSize, minimalOutput,
-                        computeTimeMicroseconds, session);
+  decompressAndCopyAndSpin(queueDepth, objectSize, minimalOutput,
+                           computeTimeMicroseconds, session);
 
   exit(EXIT_SUCCESS);
 }
