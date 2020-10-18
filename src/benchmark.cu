@@ -1,6 +1,9 @@
-#include <assert.h>
+#include <assert>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -13,6 +16,8 @@
 #include <cuda.h>
 #include <cuda_profiler_api.h>
 #include <cuda_runtime_api.h>
+
+#include "qatzip.h" // Fix this to point to the right header.
 
 using namespace std;
 
@@ -68,18 +73,91 @@ auto getGpuClockRate(bool minimal) -> int {
   return prop.clockRate;
 }
 
-void copyAndSpin(uint64_t numElems, size_t objectSize, bool minimal,
-                 uint64_t computeTimeMicroseconds) {
+static int processBuffer(QzSession_T *sess, unsigned char *src,
+                         unsigned int *src_len, unsigned char *dst,
+                         unsigned int dst_len, bool isCompress) {
+  int ret = QZ_FAIL;
+  unsigned int done = 0;
+  unsigned int buf_processed = 0;
+  unsigned int buf_remaining = *src_len;
+  unsigned int bytes_written = 0;
+  unsigned int valid_dst_buf_len = dst_len;
+
+  while (!done) {
+    /* Do actual work */
+    if (is_compress) {
+      ret = qzCompress(sess, src, src_len, dst, &dst_len, 1);
+    } else {
+      ret = qzDecompress(sess, src, src_len, dst, &dst_len);
+
+      if (QZ_DATA_ERROR == ret || (QZ_BUF_ERROR == ret && 0 == *src_len)) {
+        done = 1;
+      }
+    }
+
+    if (QZ_OK != ret && QZ_BUF_ERROR != ret && QZ_DATA_ERROR != ret) {
+      std::cerr << "doProcessBuffer failed with error: " << ret << std::endl;
+      break;
+    }
+
+    buf_processed += *src_len;
+    buf_remaining -= *src_len;
+    if (0 == buf_remaining) {
+      done = 1;
+    }
+    src += *src_len;
+    *src_len = buf_remaining;
+    dst_len = valid_dst_buf_len;
+    bytes_written = 0;
+  }
+
+  *src_len = buf_processed;
+  return ret;
+}
+
+double measureDecompressionTime(int *buffer, uint64_t bufferSize,
+                                QzSession_T &session) {
+  unsigned char *destBuffer = nullptr;
+  unsigned int destBufferSize = bufferSize;
+  CUDA_ASSERT(cudaMallocHost(&destBuffer, bufferSize));
+  unsigned int srcLen = bufferSize;
+  // Compress buffer
+  if (int ret = processBuffer(&session, *buffer, &bufferSize, destBuffer,
+                              &destBufferSize, true);
+      ret != QZ_OK) {
+    std::cerr << "QATZip compression failed. ret = " << ret << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  // Start timer
+  using namespace std::chrono;
+  high_resolution_clock::time_point timer = high_resolution_clock::now();
+
+  // Decompress buffer
+  if (int ret = processBuffer(&session, *destBuffer, &destBufferSize, buffer,
+                              &bufferSize, false);
+      ret != QZ_OK) {
+    std::cerr << "QATZip compression failed. ret = " << ret << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  // Stop Timer
+  return duration_cast<microseconds>(high_resolution_clock::now() - time)
+      .count();
+}
+
+void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
+                              bool minimal, uint64_t computeTimeMicroseconds,
+                              QzSession_T &session) {
   // We use the first GPU for our experiments
   cudaSetDevice(0);
 
   uint64_t bufferSize = numElems * objectSize;
 
-  // Allocate a pinned buffer on the host to copy from
+  // Allocate and initialize a pinned buffer on the host to copy from
   int *hostBuffer;
   CUDA_ASSERT(cudaMallocHost(&hostBuffer, bufferSize));
-  for (int i = 0; i < bufferSize / sizeof(int); ++i)
-    hostBuffer[i] = i;
+  for (int i = 0; i < bufferSize / sizeof(int); ++i) {
+    hostBuffer[i] = i % INT_MAX;
+  }
 
   // Device side buffer to copy to.
   int *deviceBuffer;
@@ -114,6 +192,11 @@ void copyAndSpin(uint64_t numElems, size_t objectSize, bool minimal,
     exit(EXIT_SUCCESS);
   } else {
 #endif // PROFILE
+    // measure the time spent 'decompressing' the data on QATZip.
+    double QAT_time_us =
+        measureDecompressionTime(hostBuffer, bufferSize, session);
+
+    // Do the GPU work.
     CUDA_ASSERT(cudaStreamSynchronize(stream));
 
     // Block the stream until all the work is queued up
@@ -173,7 +256,8 @@ void copyAndSpin(uint64_t numElems, size_t objectSize, bool minimal,
 
     if (minimal) {
       std::cout << numElems << " " << objectSize << " "
-                << computeTimeMicroseconds << " " << time_ms << std::endl;
+                << computeTimeMicroseconds << " " << time_ms << " | "
+                << QAT_time_ms << std::endl;
     } else {
       std::cout << "Transferred " << bufferSize / (double)1e9
                 << " GB of data in " << time_ms << " ms." << std::endl
@@ -181,6 +265,8 @@ void copyAndSpin(uint64_t numElems, size_t objectSize, bool minimal,
                 << "Chunk size = " << objectSize << " B" << std::endl
                 << "Per chunk compute time =" << computeTimeMicroseconds
                 << " us." << std::endl;
+      std::cout << "Time spent decompressing on QAT = " << QAT_time_us
+                << std::endl;
     }
     // Free buffers and destroy stream & events
     CUDA_ASSERT(cudaEventDestroy(stop));
@@ -203,6 +289,27 @@ void panicIfNoGPU(bool minimal) {
   int numGPUs = 0;
   CUDA_ASSERT(cudaGetDeviceCount(&numGPUs));
   assert(numGPUs != 0);
+}
+
+void panicIfNoQAT(bool minimal, QzSession_T *session) {
+  if (!minimal) {
+    std::cout << "Initializing QATZip session. Will panic if no session could "
+                 "be created."
+              << std::endl;
+  }
+  switch (qzInit(session, 0)) {
+  case QZ_OK:
+  case QZ_DUPLICATE:
+    return;
+
+  case QZ_PARAMS:
+  case QZ_NOSW_NO_HW:
+  case QZ_NOSW_NO_MDRV:
+  case QZ_NOSW_NO_INST_ATTACH:
+  case QZ_NOSW_LOW_MEM:
+    std::cerr << "Could not initialize QATZip Session. Exiting" << std::endl;
+    exit(EXIT_FAILURE);
+  }
 }
 
 int main(int argc, char **argv) {
@@ -236,6 +343,9 @@ int main(int argc, char **argv) {
     }
   }
 
+  QzSession_T session;
+  panicIfNoQAT(minimalOutput, &session);
+
   panicIfNoGPU(minimalOutput);
 
   if (!minimalOutput) {
@@ -246,7 +356,8 @@ int main(int argc, char **argv) {
               << std::endl;
   }
 
-  copyAndSpin(queueDepth, objectSize, minimalOutput, computeTimeMicroseconds);
+  decompressCopyAndSpin(queueDepth, objectSize, minimalOutput,
+                        computeTimeMicroseconds, session);
 
   exit(EXIT_SUCCESS);
 }
