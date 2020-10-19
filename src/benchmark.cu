@@ -152,7 +152,7 @@ double measureDecompressionTime(int *buffer, uint32_t bufferSize,
                             (srcBuf + i * objectSize), srcLen,
                             &compressedSize[i], false);
     // Check for errors
-    if ([[unlikely]] ret != QZ_OK) {
+    if (ret != QZ_OK) {
       std::cerr << "QATZip decompression failed. ret = " << ret << std::endl;
       exit(EXIT_FAILURE);
     }
@@ -278,7 +278,7 @@ void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
     if (minimal) {
       std::cout << numElems << " " << objectSize << " "
                 << computeTimeMicroseconds << " " << time_ms << " | "
-                << QAT_time_us << std::endl;
+                << QAT_time_us/1e3 << std::endl;
     } else {
       std::cout << "Transferred " << bufferSize / (double)1e9
                 << " GB of data in " << time_ms << " ms." << std::endl
