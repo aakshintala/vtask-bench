@@ -118,8 +118,8 @@ static int processBuffer(QzSession_T *sess, unsigned char *src,
   return ret;
 }
 
-double measureDecompressionTime(int *buffer, uint32_t bufferSize,
-                                uint32_t numObjects, size_t objectSize,
+double measureDecompressionTime(unsigned char *buffer, uint32_t bufferSize,
+                                uint32_t numObjects, uint32_t objectSize,
                                 QzSession_T *session) {
   unsigned char *destBuffer[numObjects] = {nullptr};
   for (int i = 0; i < numObjects; ++i)
@@ -127,7 +127,7 @@ double measureDecompressionTime(int *buffer, uint32_t bufferSize,
   unsigned int destBufferSize = objectSize;
 
   unsigned int srcLen = objectSize;
-  unsigned char *srcBuf = reinterpret_cast<unsigned char *>(buffer);
+  unsigned char *srcBuf = buffer;
 
   unsigned int compressedSize[numObjects] = {0};
 
@@ -162,11 +162,15 @@ double measureDecompressionTime(int *buffer, uint32_t bufferSize,
   double usElapsed =
       duration_cast<microseconds>(high_resolution_clock::now() - timer).count();
 
+  // Free the allocated DestBuffers
+  for (int i = 0; i < numObjects; ++i)
+    cudaFreeHost(destBuffer[i]);
+
   return usElapsed;
 }
 
-void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
-                              bool minimal, uint64_t computeTimeMicroseconds,
+void decompressAndCopyAndSpin(uint32_t numElems, uint32_t objectSize,
+                              bool minimal, uint32_t computeTimeMicroseconds,
                               QzSession_T *session) {
   // We use the first GPU for our experiments
   cudaSetDevice(0);
@@ -174,14 +178,14 @@ void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
   uint64_t bufferSize = numElems * objectSize;
 
   // Allocate and initialize a pinned buffer on the host to copy from
-  int *hostBuffer;
+  unsigned char *hostBuffer;
   CUDA_ASSERT(cudaMallocHost(&hostBuffer, bufferSize));
-  for (int i = 0; i < bufferSize / sizeof(int); ++i) {
-    hostBuffer[i] = i % INT_MAX;
+  for (int i = 0; i < bufferSize; ++i) {
+    hostBuffer[i] = i % CHAR_MAX;
   }
 
   // Device side buffer to copy to.
-  int *deviceBuffer;
+  unsigned char *deviceBuffer;
   CUDA_ASSERT(cudaMalloc(&deviceBuffer, bufferSize));
 
   // We use this flag as a sort of release gate for Async events queued on a
@@ -213,6 +217,7 @@ void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
     exit(EXIT_SUCCESS);
   } else {
 #endif // PROFILE
+
     // measure the time spent 'decompressing' the data on QATZip.
     double QAT_time_us = measureDecompressionTime(
         hostBuffer, bufferSize, numElems, objectSize, session);
@@ -246,14 +251,13 @@ void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
     // Enqueue GPU Commands to the stream; won't be executed until we set flag.
     CUDA_ASSERT(cudaEventRecord(start, stream));
     for (int e = 0; e < numElems; e++) {
-      uint64_t offset = e * objectSize / sizeof(int);
+      uint64_t offset = e * objectSize;
       CUDA_ASSERT(cudaMemcpyAsync((void *)(hostBuffer + offset),
                                   (const void *)(deviceBuffer + offset),
                                   objectSize, cudaMemcpyDeviceToHost, stream));
       // This kernel until spins desired the number of cycles have elapsed.
       spinForNCycles<<<numBlocks, blockSize, 0, stream>>>(
-          (int *)deviceBuffer + offset, objectSize / sizeof(int),
-          computeTimeCycles);
+          (int *)deviceBuffer + offset, objectSize, computeTimeCycles);
 
       CUDA_ASSERT(cudaMemcpyAsync((void *)(deviceBuffer + offset),
                                   (const void *)(hostBuffer + offset),
@@ -278,7 +282,7 @@ void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
     if (minimal) {
       std::cout << numElems << " " << objectSize << " "
                 << computeTimeMicroseconds << " " << time_ms << " | "
-                << QAT_time_us/1e3 << std::endl;
+                << QAT_time_us / 1e3 << std::endl;
     } else {
       std::cout << "Transferred " << bufferSize / (double)1e9
                 << " GB of data in " << time_ms << " ms." << std::endl
@@ -286,8 +290,8 @@ void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
                 << "Chunk size = " << objectSize << " B" << std::endl
                 << "Per chunk compute time =" << computeTimeMicroseconds
                 << " us." << std::endl;
-      std::cout << "Time spent decompressing on QAT = " << QAT_time_us << " us."
-                << std::endl;
+      std::cout << "Time spent decompressing on QAT = " << QAT_time_us / 1e3
+                << " ms." << std::endl;
     }
     // Free buffers and destroy stream & events
     CUDA_ASSERT(cudaEventDestroy(stop));
@@ -312,37 +316,10 @@ void panicIfNoGPU(bool minimal) {
   assert(numGPUs != 0);
 }
 
-void panicIfNoQAT(bool minimal, QzSession_T *session) {
-  if (!minimal) {
-    std::cout << "Initializing QATZip session. Will panic if no session could "
-                 "be created."
-              << std::endl;
-  }
-  switch (qzInit(session, 0)) {
-  case QZ_OK:
-  case QZ_DUPLICATE:
-    return;
-
-  case QZ_PARAMS:
-  case QZ_NOSW_NO_HW:
-  case QZ_NOSW_NO_MDRV:
-  case QZ_NOSW_NO_INST_ATTACH:
-  case QZ_NOSW_LOW_MEM:
-    std::cerr << "Could not initialize QATZip Session. Exiting" << std::endl;
-    exit(EXIT_FAILURE);
-  }
-
-  int status = qzSetupSession(session, NULL);
-  if (QZ_OK != status && QZ_DUPLICATE != status && QZ_NO_HW != status) {
-    std::cerr << "Session setup failed with error:" << status << std::endl;
-    exit(EXIT_FAILURE);
-  }
-}
-
 int main(int argc, char **argv) {
-  uint64_t queueDepth = 262144; // 1 million
-  size_t objectSize = 1024 * sizeof(int);
-  int computeTimeMicroseconds = 1;
+  uint32_t queueDepth = 1024;
+  uint32_t objectSize = 1024 * 1024;
+  uint32_t computeTimeMicroseconds = 1;
   bool minimalOutput = false;
 
   // process command line args
@@ -350,11 +327,10 @@ int main(int argc, char **argv) {
     if (0 == strcmp(argv[i], "-h")) {
       std::cerr << "Usage:" << argv[0] << " [OPTION]..." << std::endl
                 << "Options:" << std::endl
-                << "\t-m\tMinimal output for processing."
+                << "\t-m\tMinimal output for processing." << std::endl
                 << "\t-h\tDisplay this Help menu" << std::endl
                 << "\t-q\tNumber of Chunks ()" << std::endl
-                << "\t-s\tChunk size (in increments of sizeof(int))"
-                << std::endl
+                << "\t-s\tChunk size (in increments of bytes))" << std::endl
                 << "\t-t\tPer chunk compute time to simulate (us)" << std::endl
                 << std::endl
                 << std::endl;
@@ -372,7 +348,6 @@ int main(int argc, char **argv) {
 
   QzSession_T session;
   session.internal = nullptr;
-  // panicIfNoQAT(minimalOutput, &session);
 
   panicIfNoGPU(minimalOutput);
 
