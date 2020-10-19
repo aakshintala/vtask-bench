@@ -115,16 +115,16 @@ static int processBuffer(QzSession_T *sess, unsigned char *src,
 }
 
 double measureDecompressionTime(int *buffer, uint64_t bufferSize,
-                                QzSession_T &session) {
+                                QzSession_T *session) {
   unsigned char *destBuffer = nullptr;
   unsigned int destBufferSize = bufferSize;
   CUDA_ASSERT(cudaMallocHost(&destBuffer, bufferSize));
 
   unsigned int srcLen = bufferSize;
-  unsigned char *srcBuf = buffer;
+  unsigned char *srcBuf = reinterpret_cast<unsigned char*>(buffer);
 
   // Compress buffer
-  int ret = processBuffer(&session, srcBuf, &srcLen, destBuffer, destBufferSize,
+  int ret = processBuffer(session, srcBuf, &srcLen, destBuffer, destBufferSize,
                           true);
   if (ret != QZ_OK) {
     std::cerr << "QATZip compression failed. ret = " << ret << std::endl;
@@ -135,7 +135,7 @@ double measureDecompressionTime(int *buffer, uint64_t bufferSize,
   high_resolution_clock::time_point timer = high_resolution_clock::now();
 
   // Decompress buffer
-  ret = processBuffer(&session, destBuffer, &srcLen, srcBuf, srcLen, false);
+  ret = processBuffer(session, destBuffer, &srcLen, srcBuf, srcLen, false);
 
   // Stop Timer
   double usElapsed =
@@ -143,7 +143,7 @@ double measureDecompressionTime(int *buffer, uint64_t bufferSize,
 
   // Check for errors
   if (ret != QZ_OK) {
-    std::cerr << "QATZip compression failed. ret = " << ret << std::endl;
+    std::cerr << "QATZip decompression failed. ret = " << ret << std::endl;
     exit(EXIT_FAILURE);
   }
   // Make sure we didn't corrupt data in this process.
@@ -154,7 +154,7 @@ double measureDecompressionTime(int *buffer, uint64_t bufferSize,
 
 void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
                               bool minimal, uint64_t computeTimeMicroseconds,
-                              QzSession_T &session) {
+                              QzSession_T *session) {
   // We use the first GPU for our experiments
   cudaSetDevice(0);
 
@@ -265,7 +265,7 @@ void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
     if (minimal) {
       std::cout << numElems << " " << objectSize << " "
                 << computeTimeMicroseconds << " " << time_ms << " | "
-                << QAT_time_ms << std::endl;
+                << QAT_time_us << std::endl;
     } else {
       std::cout << "Transferred " << bufferSize / (double)1e9
                 << " GB of data in " << time_ms << " ms." << std::endl
@@ -318,6 +318,12 @@ void panicIfNoQAT(bool minimal, QzSession_T *session) {
     std::cerr << "Could not initialize QATZip Session. Exiting" << std::endl;
     exit(EXIT_FAILURE);
   }
+
+  int status = qzSetupSession(session, NULL);
+  if (QZ_OK != status && QZ_DUPLICATE != status && QZ_NO_HW != status) {
+    std::cerr << "Session setup failed with error:" << status <<std::endl;
+    exit(EXIT_FAILURE);
+  }
 }
 
 int main(int argc, char **argv) {
@@ -352,7 +358,8 @@ int main(int argc, char **argv) {
   }
 
   QzSession_T session;
-  panicIfNoQAT(minimalOutput, &session);
+  session.internal = nullptr;
+  //panicIfNoQAT(minimalOutput, &session);
 
   panicIfNoGPU(minimalOutput);
 
@@ -365,7 +372,9 @@ int main(int argc, char **argv) {
   }
 
   decompressAndCopyAndSpin(queueDepth, objectSize, minimalOutput,
-                           computeTimeMicroseconds, session);
+                           computeTimeMicroseconds, &session);
 
+  qzTeardownSession(&session);
+  qzClose(&session);
   exit(EXIT_SUCCESS);
 }

@@ -3,7 +3,7 @@
 CXX = clang++
 NVCC = nvcc
 CPPFLAGS += -g -O3 -std=c++11 -I/usr/local/cuda/include/
-LDFLAGS = -ldl -lpthread -L/usr/local/cuda/lib64 -lcuda -lcudart -lqatzip
+LDFLAGS = -ldl -lpthread -L/usr/local/cuda/lib64 -lcuda -lcudart -L/usr/local/lib64 -lqatzip
 #-lnvToolsExt -lnvidia-ml
 
 all: vtask-bench
