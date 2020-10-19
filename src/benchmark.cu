@@ -76,12 +76,15 @@ auto getGpuClockRate(bool minimal) -> int {
 
 static int processBuffer(QzSession_T *sess, unsigned char *src,
                          unsigned int *src_len, unsigned char *dst,
-                         unsigned int dst_len, bool isCompress) {
+                         unsigned int dst_len, unsigned int* compressed_size,
+			 bool isCompress) {
   int ret = QZ_FAIL;
   unsigned int done = 0;
   unsigned int buf_processed = 0;
   unsigned int buf_remaining = *src_len;
   unsigned int valid_dst_buf_len = dst_len;
+
+  *compressed_size = 0;
 
   while (!done) {
     /* Do actual work */
@@ -107,6 +110,7 @@ static int processBuffer(QzSession_T *sess, unsigned char *src,
     }
     src += *src_len;
     *src_len = buf_remaining;
+    *compressed_size += dst_len;
     dst_len = valid_dst_buf_len;
   }
 
@@ -123,9 +127,11 @@ double measureDecompressionTime(int *buffer, uint64_t bufferSize,
   unsigned int srcLen = bufferSize;
   unsigned char *srcBuf = reinterpret_cast<unsigned char*>(buffer);
 
+  unsigned int compressedSize = 0;
+
   // Compress buffer
   int ret = processBuffer(session, srcBuf, &srcLen, destBuffer, destBufferSize,
-                          true);
+                          &compressedSize, true);
   if (ret != QZ_OK) {
     std::cerr << "QATZip compression failed. ret = " << ret << std::endl;
     exit(EXIT_FAILURE);
@@ -135,7 +141,7 @@ double measureDecompressionTime(int *buffer, uint64_t bufferSize,
   high_resolution_clock::time_point timer = high_resolution_clock::now();
 
   // Decompress buffer
-  ret = processBuffer(session, destBuffer, &srcLen, srcBuf, srcLen, false);
+  ret = processBuffer(session, destBuffer, &compressedSize, srcBuf, srcLen, &compressedSize, false);
 
   // Stop Timer
   double usElapsed =
@@ -274,7 +280,7 @@ void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
                 << "Per chunk compute time =" << computeTimeMicroseconds
                 << " us." << std::endl;
       std::cout << "Time spent decompressing on QAT = " << QAT_time_us
-                << std::endl;
+                << " us." << std::endl;
     }
     // Free buffers and destroy stream & events
     CUDA_ASSERT(cudaEventDestroy(stop));
@@ -327,9 +333,9 @@ void panicIfNoQAT(bool minimal, QzSession_T *session) {
 }
 
 int main(int argc, char **argv) {
-  uint64_t queueDepth = 500000; // 1 million
+  uint64_t queueDepth = 262144; // 1 million
   size_t objectSize = 1024 * sizeof(int);
-  int computeTimeMicroseconds = 10;
+  int computeTimeMicroseconds = 1;
   bool minimalOutput = false;
 
   // process command line args
