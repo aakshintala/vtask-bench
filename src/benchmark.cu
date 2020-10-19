@@ -76,8 +76,8 @@ auto getGpuClockRate(bool minimal) -> int {
 
 static int processBuffer(QzSession_T *sess, unsigned char *src,
                          unsigned int *src_len, unsigned char *dst,
-                         unsigned int dst_len, unsigned int* compressed_size,
-			 bool isCompress) {
+                         unsigned int dst_len, unsigned int *compressed_size,
+                         bool isCompress) {
   int ret = QZ_FAIL;
   unsigned int done = 0;
   unsigned int buf_processed = 0;
@@ -118,42 +118,49 @@ static int processBuffer(QzSession_T *sess, unsigned char *src,
   return ret;
 }
 
-double measureDecompressionTime(int *buffer, uint64_t bufferSize,
+double measureDecompressionTime(int *buffer, uint32_t bufferSize,
+                                uint32_t numObjects, size_t objectSize,
                                 QzSession_T *session) {
-  unsigned char *destBuffer = nullptr;
-  unsigned int destBufferSize = bufferSize;
-  CUDA_ASSERT(cudaMallocHost(&destBuffer, bufferSize));
+  unsigned char *destBuffer[numObjects] = {nullptr};
+  for (int i = 0; i < numObjects; ++i)
+    CUDA_ASSERT(cudaMallocHost(&destBuffer[i], objectSize));
+  unsigned int destBufferSize = objectSize;
 
-  unsigned int srcLen = bufferSize;
-  unsigned char *srcBuf = reinterpret_cast<unsigned char*>(buffer);
+  unsigned int srcLen = objectSize;
+  unsigned char *srcBuf = reinterpret_cast<unsigned char *>(buffer);
 
-  unsigned int compressedSize = 0;
+  unsigned int compressedSize[numObjects] = {0};
 
   // Compress buffer
-  int ret = processBuffer(session, srcBuf, &srcLen, destBuffer, destBufferSize,
-                          &compressedSize, true);
-  if (ret != QZ_OK) {
-    std::cerr << "QATZip compression failed. ret = " << ret << std::endl;
-    exit(EXIT_FAILURE);
+  for (int i = 0; i < numObjects; ++i) {
+    int ret =
+        processBuffer(session, (srcBuf + i * objectSize), &srcLen,
+                      destBuffer[i], destBufferSize, &compressedSize[i], true);
+    if (ret != QZ_OK) {
+      std::cerr << "QATZip compression failed. ret = " << ret << std::endl;
+      exit(EXIT_FAILURE);
+    }
   }
   // Start timer
   using namespace std::chrono;
   high_resolution_clock::time_point timer = high_resolution_clock::now();
 
-  // Decompress buffer
-  ret = processBuffer(session, destBuffer, &compressedSize, srcBuf, srcLen, &compressedSize, false);
+  for (int i = 0; i < numObjects; ++i) {
+    // Decompress buffer
+    unsigned int compressedLen = compressedSize[i];
+    int ret = processBuffer(session, destBuffer[i], &compressedLen,
+                            (srcBuf + i * objectSize), srcLen,
+                            &compressedSize[i], false);
+    // Check for errors
+    if ([[unlikely]] ret != QZ_OK) {
+      std::cerr << "QATZip decompression failed. ret = " << ret << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  }
 
   // Stop Timer
   double usElapsed =
       duration_cast<microseconds>(high_resolution_clock::now() - timer).count();
-
-  // Check for errors
-  if (ret != QZ_OK) {
-    std::cerr << "QATZip decompression failed. ret = " << ret << std::endl;
-    exit(EXIT_FAILURE);
-  }
-  // Make sure we didn't corrupt data in this process.
-  assert(srcLen == bufferSize);
 
   return usElapsed;
 }
@@ -207,8 +214,8 @@ void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
   } else {
 #endif // PROFILE
     // measure the time spent 'decompressing' the data on QATZip.
-    double QAT_time_us =
-        measureDecompressionTime(hostBuffer, bufferSize, session);
+    double QAT_time_us = measureDecompressionTime(
+        hostBuffer, bufferSize, numElems, objectSize, session);
 
     // Do the GPU work.
     CUDA_ASSERT(cudaStreamSynchronize(stream));
@@ -279,8 +286,8 @@ void decompressAndCopyAndSpin(uint64_t numElems, size_t objectSize,
                 << "Chunk size = " << objectSize << " B" << std::endl
                 << "Per chunk compute time =" << computeTimeMicroseconds
                 << " us." << std::endl;
-      std::cout << "Time spent decompressing on QAT = " << QAT_time_us
-                << " us." << std::endl;
+      std::cout << "Time spent decompressing on QAT = " << QAT_time_us << " us."
+                << std::endl;
     }
     // Free buffers and destroy stream & events
     CUDA_ASSERT(cudaEventDestroy(stop));
@@ -327,7 +334,7 @@ void panicIfNoQAT(bool minimal, QzSession_T *session) {
 
   int status = qzSetupSession(session, NULL);
   if (QZ_OK != status && QZ_DUPLICATE != status && QZ_NO_HW != status) {
-    std::cerr << "Session setup failed with error:" << status <<std::endl;
+    std::cerr << "Session setup failed with error:" << status << std::endl;
     exit(EXIT_FAILURE);
   }
 }
@@ -365,7 +372,7 @@ int main(int argc, char **argv) {
 
   QzSession_T session;
   session.internal = nullptr;
-  //panicIfNoQAT(minimalOutput, &session);
+  // panicIfNoQAT(minimalOutput, &session);
 
   panicIfNoGPU(minimalOutput);
 
