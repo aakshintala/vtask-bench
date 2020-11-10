@@ -233,13 +233,6 @@ void decompressAndCopyAndSpin(uint32_t numElems, uint32_t objectSize,
     *flag = 0;
     delay<<<1, 1, 0, stream>>>(flag);
 
-    // Figure out what the max numbers for blockSize and numBlocks can be on
-    // this GPU.
-    int blockSize = 128;
-    int numBlocks = 1024;
-    CUDA_ASSERT(cudaOccupancyMaxPotentialBlockSize(&numBlocks, &blockSize,
-                                                   spinForNCycles));
-
     uint64_t computeTimeCycles =
         (computeTimeMicroseconds / 1e6) * getGpuClockRate(minimal) * 1e3;
 
@@ -256,7 +249,7 @@ void decompressAndCopyAndSpin(uint32_t numElems, uint32_t objectSize,
                                   (const void *)(deviceBuffer + offset),
                                   objectSize, cudaMemcpyDeviceToHost, stream));
       // This kernel until spins desired the number of cycles have elapsed.
-      spinForNCycles<<<numBlocks, blockSize, 0, stream>>>(
+      spinForNCycles<<<1024, 26, 0, stream>>>(
           (int *)deviceBuffer + offset, objectSize, computeTimeCycles);
 
       CUDA_ASSERT(cudaMemcpyAsync((void *)(deviceBuffer + offset),
@@ -317,8 +310,8 @@ void panicIfNoGPU(bool minimal) {
 }
 
 int main(int argc, char **argv) {
-  uint32_t queueDepth = 1024;
-  uint32_t objectSize = 1024 * 1024;
+  uint32_t queueDepth = 256 * 1024;
+  uint32_t objectSize = 4096;
   uint32_t computeTimeMicroseconds = 1;
   bool minimalOutput = false;
 
@@ -329,18 +322,21 @@ int main(int argc, char **argv) {
                 << "Options:" << std::endl
                 << "\t-m\tMinimal output for processing." << std::endl
                 << "\t-h\tDisplay this Help menu" << std::endl
-                << "\t-q\tNumber of Chunks ()" << std::endl
-                << "\t-s\tChunk size (in increments of bytes))" << std::endl
+                << "\t-q\tNumber of Chunks" << std::endl
+                << "\t-s\tChunk size (in increments of pages (4 KiB))" << std::endl
                 << "\t-t\tPer chunk compute time to simulate (us)" << std::endl
                 << std::endl
                 << std::endl;
       return EXIT_FAILURE;
     } else if (0 == strcmp(argv[i], "-q")) {
-      queueDepth = atoi(argv[i + 1]);
+      queueDepth = std::stoul(argv[i + 1]);
+      //queueDepth = atoi(argv[i + 1]);
     } else if (0 == strcmp(argv[i], "-s")) {
-      objectSize = atoi(argv[i + 1]) * sizeof(int);
+      objectSize = std::stoul(argv[i + 1]);
+      //objectSize = atoi(argv[i + 1]) * sizeof(int);
     } else if (0 == strcmp(argv[i], "-t")) {
-      computeTimeMicroseconds = atoi(argv[i + 1]);
+      computeTimeMicroseconds = std::stoul(argv[i + 1]);
+      //computeTimeMicroseconds = atoi(argv[i + 1]);
     } else if (0 == strcmp(argv[i], "-m")) {
       minimalOutput = true;
     }
@@ -353,8 +349,8 @@ int main(int argc, char **argv) {
 
   if (!minimalOutput) {
     std::cout << "Synthetic GPU data movement and compute benchmark.\n";
-    std::cout << "Moving " << queueDepth * objectSize / 1000 / 1000
-              << " MB of data." << std::endl;
+    //std::cout << "Moving " << queueDepth * objectSize / 1024 / 1024
+    std::cout << "Moving " << queueDepth * objectSize << " B of data." << std::endl;
     std::cout << "Simulated compute time: " << computeTimeMicroseconds << " us."
               << std::endl;
   }
@@ -362,7 +358,5 @@ int main(int argc, char **argv) {
   decompressAndCopyAndSpin(queueDepth, objectSize, minimalOutput,
                            computeTimeMicroseconds, &session);
 
-  qzTeardownSession(&session);
-  qzClose(&session);
   exit(EXIT_SUCCESS);
 }

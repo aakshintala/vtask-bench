@@ -9,10 +9,10 @@ touch $outfile
 # the benchmark uses ints, so divide by sizeof(int)
 # Tune this according to max memory on your GPU.
 # GTX 970 I use has 4GiB so I set this to 1GiB
-let totalDataMoved=1*1024*1024*1024/4;
+let totalDataMoved=1*1024*1024*1024;
 
-# Because each element is a 32-bit int, that's 4kb (1 page)
-let elemSize=1024;
+# Min size is a page (4KiB)
+let elemSize=4096;
 
 # Max elemSize = 1GiB
 while [[ $elemSize -lt 1073741824 ]]; do
